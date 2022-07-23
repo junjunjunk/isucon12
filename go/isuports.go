@@ -1203,7 +1203,7 @@ type PlayerHandlerResult struct {
 // 参加者の詳細情報を取得する
 // // ex.) https://kayac.t.isucon.dev/player/6c91e2b8
 func playerHandler(c echo.Context) error {
-	ctx := context.Background()
+	ctx := c.Request().Context()
 
 	v, err := parseViewer(c)
 	if err != nil {
