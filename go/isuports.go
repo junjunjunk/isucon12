@@ -1075,11 +1075,21 @@ func competitionScoreHandler(c echo.Context) error {
 	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
 	cacheStore.Set(fmt.Sprintf("update_lock_%d_%s", v.tenantID, competitionID), true, cache.NoExpiration)
 
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
+	// fl, err := flockByTenantID(v.tenantID)
+	// if err != nil {
+	// 	return fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
+
+	// 既存のスコアの最大の行数を取得
+	var maxRow int64
+	if err := tenantDB.QueryRowContext(
+		ctx,
+		"SELECT MAX(row_nom) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+		v.tenantID, competitionID,
+	).Scan(&maxRow); err != nil {
+		maxRow = 0
 	}
-	defer fl.Close()
 
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
@@ -1092,6 +1102,10 @@ func competitionScoreHandler(c echo.Context) error {
 			}
 			return fmt.Errorf("error r.Read at rows: %w", err)
 		}
+		if rowNum < maxRow {
+			continue
+		}
+
 		if len(row) != 2 {
 			return fmt.Errorf("row must have two columns: %#v", row)
 		}
@@ -1130,14 +1144,14 @@ func competitionScoreHandler(c echo.Context) error {
 		})
 	}
 
-	if _, err := tenantDB.ExecContext(
-		ctx,
-		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
-		v.tenantID,
-		competitionID,
-	); err != nil {
-		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
-	}
+	// if _, err := tenantDB.ExecContext(
+	// 	ctx,
+	// 	"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+	// 	v.tenantID,
+	// 	competitionID,
+	// ); err != nil {
+	// 	return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+	// }
 
 	_, err = tenantDB.NamedExec(`INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)`, playerScoreRows)
 	if err != nil {
