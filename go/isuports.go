@@ -1296,10 +1296,10 @@ func playerHandler(c echo.Context) error {
 
 type CompetitionRank struct {
 	Rank              int64  `json:"rank"`
-	Score             int64  `json:"score"`
-	PlayerID          string `json:"player_id"`
-	PlayerDisplayName string `json:"player_display_name"`
-	RowNum            int64  `json:"-"` // APIレスポンスのJSONには含まれない
+	Score             int64  `json:"score" db:"score"`
+	PlayerID          string `json:"player_id" db:"player_id"`
+	PlayerDisplayName string `json:"player_display_name" db:"display_name"`
+	RowNum            int64  `json:"-" db:"max_row_num"` // APIレスポンスのJSONには含まれない
 }
 
 type CompetitionRankingHandlerResult struct {
@@ -1376,35 +1376,39 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 	defer fl.Close()
 	pss := []PlayerScoreRow{}
+	ranks := make([]CompetitionRank, 0, len(pss))
+
 	if err := tenantDB.SelectContext(
 		ctx,
-		&pss,
-		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
+		&ranks,
+		`SELECT
+			ps.score,
+			ps.player_id,
+			p.display_name,
+			MAX(ps.row_num) AS max_row_num
+		FROM
+			player_score ps,
+			player p
+		ON
+			ps.player_id = p.id
+		WHERE
+			ps.tenant_id = ? AND
+			ps.competition_id = ?
+		GROUP BY
+			ps.player_id,
+			ps.competition_id,
+			ps.tenant_id
+		HAVING
+			max_row_num = ps.row_num
+		ORDER BY 
+			ps.score DESC
+		`,
 		tenant.ID,
 		competitionID,
 	); err != nil {
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	scoredPlayerSet := make(map[string]struct{}, len(pss))
-	for _, ps := range pss {
-		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
-		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
-			continue
-		}
-		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
-		ranks = append(ranks, CompetitionRank{
-			Score:             ps.Score,
-			PlayerID:          p.ID,
-			PlayerDisplayName: p.DisplayName,
-			RowNum:            ps.RowNum,
-		})
-	}
+
 	sort.Slice(ranks, func(i, j int) bool {
 		if ranks[i].Score == ranks[j].Score {
 			return ranks[i].RowNum < ranks[j].RowNum
