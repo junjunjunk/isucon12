@@ -27,6 +27,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	nrecho "github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
+	"github.com/newrelic/go-agent/v3/newrelic"
 )
 
 const (
@@ -133,14 +135,28 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
-	e := echo.New()
-	e.Debug = true
-	e.Logger.SetLevel(log.DEBUG)
-
 	var (
 		sqlLogger io.Closer
 		err       error
 	)
+	e := echo.New()
+	e.Debug = true
+	e.Logger.SetLevel(log.DEBUG)
+	host, err := os.Hostname()
+	if err != nil {
+		log.Fatal(err)
+	}
+	app, err := newrelic.NewApplication(
+		newrelic.ConfigAppName("isucon-"+host),
+		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
+		newrelic.ConfigDistributedTracerEnabled(true),
+		// newrelic.ConfigDebugLogger(os.Stdout),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	e.Use(nrecho.Middleware(app))
+
 	// sqliteのクエリログを出力する設定
 	// 環境変数 ISUCON_SQLITE_TRACE_FILE を設定すると、そのファイルにクエリログをJSON形式で出力する
 	// 未設定なら出力しない
