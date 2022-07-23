@@ -27,8 +27,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	_ "github.com/mattn/go-sqlite3"
-	_ "github.com/newrelic/go-agent/v3/integrations/nrmysql"
-	_ "github.com/newrelic/go-agent/v3/integrations/nrsqlite3"
+
 
 	"github.com/patrickmn/go-cache"
 )
