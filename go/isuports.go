@@ -27,10 +27,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	_ "github.com/mattn/go-sqlite3"
-	nrecho "github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
-	_ "github.com/newrelic/go-agent/v3/integrations/nrmysql"
-	_ "github.com/newrelic/go-agent/v3/integrations/nrsqlite3"
-	"github.com/newrelic/go-agent/v3/newrelic"
+
 
 	"github.com/patrickmn/go-cache"
 )
@@ -52,7 +49,7 @@ var (
 
 	adminDB *sqlx.DB
 
-	sqliteDriverName = "nrsqlite3"
+	sqliteDriverName = "sqlite3"
 
 	cacheStore *cache.Cache
 )
@@ -80,6 +77,7 @@ func connectAdminDB() (*sqlx.DB, error) {
 	config.ParseTime = true
 	config.InterpolateParams = true
 	dsn := config.FormatDSN()
+	return sqlx.Open("mysql", dsn)
 	// return sqlx.Open("nrmysql", dsn)
 	for {
 		fmt.Println("connecting DB..")
@@ -161,22 +159,8 @@ func Run() {
 		err       error
 	)
 	e := echo.New()
-	e.Debug = true
-	e.Logger.SetLevel(log.DEBUG)
-	host, err := os.Hostname()
-	if err != nil {
-		log.Fatal(err)
-	}
-	app, err := newrelic.NewApplication(
-		newrelic.ConfigAppName("isucon-"+host),
-		newrelic.ConfigLicense(os.Getenv("NEW_RELIC_LICENSE_KEY")),
-		newrelic.ConfigDistributedTracerEnabled(true),
-		// newrelic.ConfigDebugLogger(os.Stdout),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	e.Use(nrecho.Middleware(app))
+	// e.Debug = true
+	e.Logger.SetLevel(log.OFF)
 
 	// sqliteのクエリログを出力する設定
 	// 環境変数 ISUCON_SQLITE_TRACE_FILE を設定すると、そのファイルにクエリログをJSON形式で出力する
@@ -373,7 +357,7 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	// テナントの存在確認
 	var tenant TenantRow
 	if err := adminDB.GetContext(
-		c.Request().Context(),
+		context.Background(),
 		&tenant,
 		"SELECT * FROM tenant WHERE name = ?",
 		tenantName,
@@ -516,7 +500,7 @@ func tenantsAddHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	now := time.Now().Unix()
 	insertRes, err := adminDB.ExecContext(
 		ctx,
@@ -681,7 +665,7 @@ func tenantsBillingHandler(c echo.Context) error {
 		)
 	}
 
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	if v, err := parseViewer(c); err != nil {
 		return err
 	} else if v.role != RoleAdmin {
@@ -774,7 +758,7 @@ type PlayersListHandlerResult struct {
 // GET /api/organizer/players
 // 参加者一覧を返す
 func playersListHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return err
@@ -820,7 +804,7 @@ type PlayersAddHandlerResult struct {
 // GET /api/organizer/players/add
 // テナントに参加者を追加する
 func playersAddHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return fmt.Errorf("error parseViewer: %w", err)
@@ -896,7 +880,7 @@ type PlayerDisqualifiedHandlerResult struct {
 // POST /api/organizer/player/:player_id/disqualified
 // 参加者を失格にする
 func playerDisqualifiedHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return fmt.Errorf("error parseViewer: %w", err)
@@ -970,7 +954,7 @@ type CompetitionsAddHandlerResult struct {
 // POST /api/organizer/competitions/add
 // 大会を追加する
 func competitionsAddHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return fmt.Errorf("error parseViewer: %w", err)
@@ -1016,7 +1000,7 @@ func competitionsAddHandler(c echo.Context) error {
 // POST /api/organizer/competition/:competition_id/finish
 // 大会を終了する
 func competitionFinishHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return fmt.Errorf("error parseViewer: %w", err)
@@ -1065,7 +1049,7 @@ type ScoreHandlerResult struct {
 // POST /api/organizer/competition/:competition_id/score
 // 大会のスコアをCSVでアップロードする
 func competitionScoreHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return fmt.Errorf("error parseViewer: %w", err)
@@ -1212,7 +1196,7 @@ type BillingHandlerResult struct {
 // GET /api/organizer/billing
 // テナント内の課金レポートを取得する
 func billingHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return fmt.Errorf("error parseViewer: %w", err)
@@ -1269,7 +1253,7 @@ type PlayerHandlerResult struct {
 // 参加者の詳細情報を取得する
 // // ex.) https://kayac.t.isucon.dev/player/6c91e2b8
 func playerHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 
 	v, err := parseViewer(c)
 	if err != nil {
@@ -1373,7 +1357,7 @@ type CompetitionRankingHandlerResult struct {
 // GET /api/player/competition/:competition_id/ranking
 // 大会ごとのランキングを取得する
 func competitionRankingHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	v, err := parseViewer(c)
 	if err != nil {
 		return err
@@ -1595,7 +1579,7 @@ type CompetitionsHandlerResult struct {
 // GET /api/player/competitions
 // 大会の一覧を取得する
 func playerCompetitionsHandler(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 
 	v, err := parseViewer(c)
 	if err != nil {
@@ -1639,7 +1623,7 @@ func organizerCompetitionsHandler(c echo.Context) error {
 }
 
 func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
-	ctx := c.Request().Context()
+	ctx := context.Background()
 
 	cs := []CompetitionRow{}
 	if err := tenantDB.SelectContext(
@@ -1724,7 +1708,7 @@ func meHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error connectToTenantDB: %w", err)
 	}
-	ctx := c.Request().Context()
+	ctx := context.Background()
 	p, err := retrievePlayer(ctx, tenantDB, v.playerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
