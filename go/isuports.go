@@ -32,6 +32,8 @@ import (
 	_ "github.com/newrelic/go-agent/v3/integrations/nrmysql"
 	_ "github.com/newrelic/go-agent/v3/integrations/nrsqlite3"
 	"github.com/newrelic/go-agent/v3/newrelic"
+
+	"github.com/patrickmn/go-cache"
 )
 
 const (
@@ -52,7 +54,13 @@ var (
 	adminDB *sqlx.DB
 
 	sqliteDriverName = "nrsqlite3"
+
+	cacheStore *cache.Cache
 )
+
+func init() {
+	cacheStore = cache.New(5*time.Minute, 10*time.Minute)
+}
 
 // 環境変数を取得する、なければデフォルト値を返す
 func getEnv(key string, defaultValue string) string {
@@ -587,11 +595,11 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
 
 	// スコアを登録した参加者のIDを取得する
 	scoredPlayerIDs := []string{}
@@ -1066,11 +1074,14 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 
 	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
+	cacheStore.Set(fmt.Sprintf("update_lock_%d_%s", v.tenantID, competitionID), true, cache.NoExpiration)
+
 	fl, err := flockByTenantID(v.tenantID)
 	if err != nil {
 		return fmt.Errorf("error flockByTenantID: %w", err)
 	}
 	defer fl.Close()
+
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
 	for {
@@ -1183,6 +1194,10 @@ func competitionScoreHandler(c echo.Context) error {
 			log.Fatal(err)
 		}
 	}
+	now := time.Now().Unix()
+
+	cacheStore.Set(fmt.Sprintf("last_update_%d_%s", v.tenantID, competitionID), now, cache.NoExpiration)
+	cacheStore.Set(fmt.Sprintf("update_lock_%d_%s", v.tenantID, competitionID), false, cache.NoExpiration)
 
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
@@ -1288,23 +1303,13 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	// competitonIDs := []string{}
-	// if err := tenantDB.SelectContext(
-	// 	ctx,
-	// 	&competitonIDs,
-	// 	"SELECT id FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
-	// 	v.tenantID,
-	// ); err != nil && !errors.Is(err, sql.ErrNoRows) {
-	// 	return fmt.Errorf("error Select competition: %w", err)
-	// }
-	// fmt.Printf("%+v\n", competitonIDs)
-
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// player同士でロックがかかる状態になっている
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
 
 	psds := []PlayerScoreDetail{}
 	// competitonIDから大会情報を取得
@@ -1359,6 +1364,7 @@ type CompetitionRank struct {
 	RowNum            int64  `json:"-" db:"max_row_num"`    // APIレスポンスのJSONには含まれない
 	TenantID          int64  `json:"-" db:"tenant_id"`      // APIレスポンスのJSONには含まれない
 	CompetitionID     string `json:"-" db:"competition_id"` // APIレスポンスのJSONには含まれない
+	LastUpdate        int64
 }
 
 type CompetitionRankingHandlerResult struct {
@@ -1436,69 +1442,77 @@ func competitionRankingHandler(c echo.Context) error {
 		offset = int(rankAfter)
 	}
 
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
-	pss := []PlayerScoreRow{}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	if err := adminDB.SelectContext(ctx, &ranks, "SELECT * FROM `rank` WHERE tenant_id = ? AND competition_id = ? ORDER BY score DESC LIMIT 101 OFFSET ?", tenant.ID, competitionID, offset); err != nil {
-		return fmt.Errorf("error Select: %w", err)
-	}
-
-	sort.Slice(ranks, func(i, j int) bool {
-		if ranks[i].Score == ranks[j].Score {
-			return ranks[i].RowNum < ranks[j].RowNum
-		}
-		return ranks[i].Score > ranks[j].Score
-	})
-
-	// if err := tenantDB.SelectContext(
-	// 	ctx,
-	// 	&ranks,
-	// 	`SELECT
-	// 		ps.score,
-	// 		ps.player_id,
-	// 		p.display_name,
-	// 		MAX(ps.row_num) AS max_row_num
-	// 	FROM
-	// 		player_score ps,
-	// 		player p
-	// 	ON
-	// 		ps.player_id = p.id
-	// 	WHERE
-	// 		ps.tenant_id = ? AND
-	// 		ps.competition_id = ?
-	// 	GROUP BY
-	// 		ps.player_id,
-	// 		ps.competition_id,
-	// 		ps.tenant_id
-	// 	HAVING
-	// 		max_row_num = ps.row_num
-	// 	ORDER BY
-	// 		ps.score DESC
-	// 	LIMIT 101
-	// 	OFFSET ?`,
-	// 	tenant.ID,
-	// 	competitionID,
-	// 	rankAfter,
-	// ); err != nil {
-	// 	return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
-	// }
+	// cacheを見に行く
+	// cacheを使える条件
+	//   まだスコアが更新されてない場合
+	//      cacheが存在すれば使える
+	//   スコアの更新があった場合
+	//      スコアの更新日時以降のcacheがあれば使える
+	//   スコアの更新中の場合
+	//      使えない
 
 	pagedRanks := make([]CompetitionRank, 0, 100)
-	for i, rank := range ranks {
-		pagedRanks = append(pagedRanks, CompetitionRank{
-			Rank:              rankAfter + int64(i+1),
-			Score:             rank.Score,
-			PlayerID:          rank.PlayerID,
-			PlayerDisplayName: rank.PlayerDisplayName,
-		})
-		if len(pagedRanks) >= 100 {
-			break
+
+	// スコア更新中かどうか？
+	updating, found := cacheStore.Get(fmt.Sprintf("update_lock_%d_%s", v.tenantID, competitionID))
+	if found && updating.(bool) {
+		pagedRanks, err = getRakingFromDB(ctx, v.tenantID, competitionID, rankAfter, tenantDB, offset)
+		if err != nil {
+			return fmt.Errorf("error get from DB: %w", err)
 		}
+	} else {
+		// 更新中でないなら
+
+		// 最終更新日を取得
+		var lastUpdate int64
+		g, found := cacheStore.Get(fmt.Sprintf("last_update_%d_%s", v.tenantID, competitionID))
+		if !found {
+			lastUpdate = 0
+		} else {
+			lastUpdate = g.(int64)
+		}
+
+		// 最終更新日以降のスコアがあるかどうか
+		hasCache := true
+
+		// rankAfter後の初めのスコア
+		var cr CompetitionRank
+		s, found := cacheStore.Get(fmt.Sprintf("%d:%s:%d", v.tenantID, competitionID, rankAfter+1))
+		if !found {
+			hasCache = false
+		} else {
+			cr = s.(CompetitionRank)
+			if cr.LastUpdate < lastUpdate {
+				hasCache = false
+			}
+		}
+
+		// rankAfterの後の100個目
+		t, found := cacheStore.Get(fmt.Sprintf("%d:%s:%d", v.tenantID, competitionID, rankAfter+1+100))
+		if !found {
+			hasCache = false
+		} else {
+			cr = t.(CompetitionRank)
+			if cr.LastUpdate < lastUpdate {
+				hasCache = false
+			}
+		}
+
+		if hasCache {
+			// cacheがあれば取得
+			for i := rankAfter + 1; i <= rankAfter+100; i++ {
+				s, _ := cacheStore.Get(fmt.Sprintf("%d:%s:%d", v.tenantID, competitionID, i))
+				pagedRanks = append(pagedRanks, s.(CompetitionRank))
+			}
+
+		} else {
+			// なければDBから取得
+			pagedRanks, err = getRakingFromDB(ctx, v.tenantID, competitionID, rankAfter, tenantDB, offset)
+			if err != nil {
+				return fmt.Errorf("error get from DB: %w", err)
+			}
+		}
+
 	}
 
 	res := SuccessResult{
@@ -1513,6 +1527,50 @@ func competitionRankingHandler(c echo.Context) error {
 		},
 	}
 	return c.JSON(http.StatusOK, res)
+}
+
+func getRakingFromDB(ctx context.Context, tenantID int64, competitionID string, rankAfter int64, tenantDB *sqlx.DB, offset int) ([]CompetitionRank, error) {
+	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
+	fl, err := flockByTenantID(tenantID)
+	if err != nil {
+		return []CompetitionRank{}, fmt.Errorf("error flockByTenantID: %w", err)
+	}
+	defer fl.Close()
+	pss := []PlayerScoreRow{}
+	ranks := make([]CompetitionRank, 0, len(pss))
+
+	if err := adminDB.SelectContext(ctx, &ranks, "SELECT * FROM `rank` WHERE tenant_id = ? AND competition_id = ? ORDER BY score DESC LIMIT 101 OFFSET ?", tenantID, competitionID, offset); err != nil {
+		return []CompetitionRank{}, fmt.Errorf("error Select: %w", err)
+	}
+
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].Score == ranks[j].Score {
+			return ranks[i].RowNum < ranks[j].RowNum
+		}
+		return ranks[i].Score > ranks[j].Score
+	})
+
+	now := time.Now().Unix()
+
+	pagedRanks := make([]CompetitionRank, 0, 100)
+	for i, rank := range ranks {
+		cr := CompetitionRank{
+			Rank:              rankAfter + int64(i+1),
+			Score:             rank.Score,
+			PlayerID:          rank.PlayerID,
+			PlayerDisplayName: rank.PlayerDisplayName,
+			LastUpdate:        now,
+		}
+
+		cacheStore.Set(fmt.Sprintf("%d:%s:%d", tenantID, competitionID, cr.Rank), cr, cache.DefaultExpiration)
+
+		pagedRanks = append(pagedRanks, cr)
+		if len(pagedRanks) >= 100 {
+			break
+		}
+	}
+
+	return pagedRanks, nil
 }
 
 type CompetitionsHandlerResult struct {

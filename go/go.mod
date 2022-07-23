@@ -28,7 +28,10 @@ require (
 	github.com/lestrrat-go/option v1.0.0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/newrelic/go-agent/v3/integrations/nrmysql v1.2.1
+	github.com/newrelic/go-agent/v3/integrations/nrsqlite3 v1.1.1
 	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.1 // indirect
 	golang.org/x/crypto v0.0.0-20220525230936-793ad666bf5e // indirect
