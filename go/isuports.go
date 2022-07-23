@@ -1189,8 +1189,8 @@ func billingHandler(c echo.Context) error {
 }
 
 type PlayerScoreDetail struct {
-	CompetitionTitle string `json:"competition_title"`
-	Score            int64  `json:"score"`
+	CompetitionTitle string `json:"competition_title" db:"competition_title"`
+	Score            int64  `json:"score" db:"score"`
 }
 
 type PlayerHandlerResult struct {
@@ -1201,6 +1201,7 @@ type PlayerHandlerResult struct {
 // 参加者向けAPI
 // GET /api/player/player/:player_id
 // 参加者の詳細情報を取得する
+// // ex.) https://kayac.t.isucon.dev/player/6c91e2b8
 func playerHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -1226,6 +1227,7 @@ func playerHandler(c echo.Context) error {
 	if playerID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "player_id is required")
 	}
+	// player_idからプレイヤー情報を取得する=テナント情報を取得する
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1233,15 +1235,17 @@ func playerHandler(c echo.Context) error {
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
-	cs := []CompetitionRow{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&cs,
-		"SELECT * FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
-		v.tenantID,
-	); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select competition: %w", err)
-	}
+
+	// competitonIDs := []string{}
+	// if err := tenantDB.SelectContext(
+	// 	ctx,
+	// 	&competitonIDs,
+	// 	"SELECT id FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
+	// 	v.tenantID,
+	// ); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	// 	return fmt.Errorf("error Select competition: %w", err)
+	// }
+	// fmt.Printf("%+v\n", competitonIDs)
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	fl, err := flockByTenantID(v.tenantID)
@@ -1249,37 +1253,36 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error flockByTenantID: %w", err)
 	}
 	defer fl.Close()
-	pss := make([]PlayerScoreRow, 0, len(cs))
-	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
-		}
-		pss = append(pss, ps)
-	}
 
-	psds := make([]PlayerScoreDetail, 0, len(pss))
-	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
-		}
-		psds = append(psds, PlayerScoreDetail{
-			CompetitionTitle: comp.Title,
-			Score:            ps.Score,
-		})
+	psds := []PlayerScoreDetail{}
+	// competitonIDから大会情報を取得
+
+	if err := tenantDB.SelectContext(
+		ctx,
+		&psds,
+		// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
+		// competitonIDをINで絞り込んで取得する
+		// tenant x playerで絞り込みかけてcompetition_idとrow_numの最大値が書いてあるテーブルを用意する
+		// TODO: competiton IDでINするべきか。INするならクエリが①回増える
+		`SELECT c.title AS competition_title ,a.score FROM 
+		( SELECT competition_id,row_num,score FROM player_score WHERE tenant_id = ? AND player_id = ?) AS a 
+		INNER JOIN
+		( SELECT competition_id, max(row_num) AS max_row_num 
+		FROM player_score WHERE tenant_id = ? AND player_id = ? GROUP BY competition_id) AS b 
+		ON a.row_num = b.max_row_num AND a.competition_id = b.competition_id
+		INNER JOIN
+		( SELECT id,title 
+		FROM competition WHERE tenant_id = ?) AS c
+		ON a.competition_id = c.id
+		`,
+		v.tenantID,
+		p.ID,
+		v.tenantID,
+		p.ID,
+		v.tenantID,
+	); err != nil {
+		// 行がない = スコアが記録されてない
+		return fmt.Errorf("error Select", err)
 	}
 
 	res := SuccessResult{
