@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1140,6 +1141,12 @@ func competitionScoreHandler(c echo.Context) error {
 		log.Fatal(err)
 	}
 	ranks := make([]CompetitionRank, 0, len(pss))
+
+	// delete competition_rank
+	if _, err := adminDB.ExecContext(ctx, "DELETE FROM `rank` WHERE tenant_id = ? AND competition_id = ?", v.tenantID, competitionID); err != nil {
+		return fmt.Errorf("error Delete rank: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+	}
+
 	if err := tenantDB.SelectContext(
 		context.Background(),
 		&ranks,
@@ -1424,6 +1431,11 @@ func competitionRankingHandler(c echo.Context) error {
 		rankAfter = 0
 	}
 
+	offset := 0
+	if rankAfter > 0 {
+		offset = int(rankAfter)
+	}
+
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	fl, err := flockByTenantID(v.tenantID)
 	if err != nil {
@@ -1432,9 +1444,16 @@ func competitionRankingHandler(c echo.Context) error {
 	defer fl.Close()
 	pss := []PlayerScoreRow{}
 	ranks := make([]CompetitionRank, 0, len(pss))
-	if err := adminDB.SelectContext(ctx, &ranks, "SELECT * FROM `rank` WHERE tenant_id = ? AND competition_id = ? ORDER BY score DESC, max_row_num ASC LIMIT 101 OFFSET ?", tenant.ID, competitionID, rankAfter); err != nil {
+	if err := adminDB.SelectContext(ctx, &ranks, "SELECT * FROM `rank` WHERE tenant_id = ? AND competition_id = ? ORDER BY score DESC LIMIT 101 OFFSET ?", tenant.ID, competitionID, offset); err != nil {
 		return fmt.Errorf("error Select: %w", err)
 	}
+
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].Score == ranks[j].Score {
+			return ranks[i].RowNum < ranks[j].RowNum
+		}
+		return ranks[i].Score > ranks[j].Score
+	})
 
 	// if err := tenantDB.SelectContext(
 	// 	ctx,
@@ -1726,6 +1745,13 @@ func initializeHandler(c echo.Context) error {
 			}
 		}
 		if len(ranks) > 0 {
+			sort.Slice(ranks, func(i, j int) bool {
+				if ranks[i].Score == ranks[j].Score {
+					return ranks[i].RowNum < ranks[j].RowNum
+				}
+				return ranks[i].Score > ranks[j].Score
+			})
+
 			if _, err := adminDB.NamedExec("INSERT INTO `rank` (tenant_id, competition_id, player_id, `score`, display_name, max_row_num) VALUES (:tenant_id, :competition_id, :player_id, :score, :display_name, :max_row_num)", ranks); err != nil {
 				log.Fatal(err)
 			}
