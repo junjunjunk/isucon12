@@ -399,9 +399,19 @@ type PlayerRow struct {
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
 	var p PlayerRow
+
+	t, found := cacheStore.Get("player_" + id)
+	if found {
+		p = t.(PlayerRow)
+		return &p, nil
+	}
+
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
+
+	cacheStore.Set("player_"+id, p, cache.DefaultExpiration)
+
 	return &p, nil
 }
 
@@ -821,6 +831,8 @@ func playersAddHandler(c echo.Context) error {
 	displayNames := params["display_name[]"]
 
 	pds := make([]PlayerDetail, 0, len(displayNames))
+	playerRows := make([]PlayerRow, 0, len(displayNames))
+
 	for _, displayName := range displayNames {
 		id, err := dispenseID(ctx)
 		if err != nil {
@@ -828,25 +840,36 @@ func playersAddHandler(c echo.Context) error {
 		}
 
 		now := time.Now().Unix()
-		if _, err := tenantDB.ExecContext(
-			ctx,
-			"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			id, v.tenantID, displayName, false, now, now,
-		); err != nil {
-			return fmt.Errorf(
-				"error Insert player at tenantDB: id=%s, displayName=%s, isDisqualified=%t, createdAt=%d, updatedAt=%d, %w",
-				id, displayName, false, now, now, err,
-			)
-		}
-		p, err := retrievePlayer(ctx, tenantDB, id)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
+
 		pds = append(pds, PlayerDetail{
-			ID:             p.ID,
-			DisplayName:    p.DisplayName,
-			IsDisqualified: p.IsDisqualified,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
 		})
+
+		p := PlayerRow{
+			TenantID:       v.tenantID,
+			ID:             id,
+			DisplayName:    displayName,
+			IsDisqualified: false,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+
+		cacheStore.Set("player_"+id, p, cache.DefaultExpiration)
+
+		playerRows = append(playerRows, p)
+
+	}
+
+	if _, err := tenantDB.NamedExecContext(
+		ctx,
+		"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (:id, :tenant_id, :display_name, :is_disqualified, :created_at, :updated_at)",
+		playerRows); err != nil {
+		return fmt.Errorf(
+			"error Insert player at tenantDB %w",
+			err,
+		)
 	}
 
 	res := PlayersAddHandlerResult{
@@ -878,8 +901,21 @@ func playerDisqualifiedHandler(c echo.Context) error {
 	defer tenantDB.Close()
 
 	playerID := c.Param("player_id")
-
 	now := time.Now().Unix()
+
+	// 存在確認
+	t, found := cacheStore.Get("player_" + playerID)
+	if !found {
+		return echo.NewHTTPError(http.StatusNotFound, "player not found")
+	}
+
+	// cacheの更新
+	np := t.(PlayerRow)
+	np.IsDisqualified = true
+	np.UpdatedAt = now
+	cacheStore.Set("player_"+playerID, np, cache.DefaultExpiration)
+
+	// データの更新
 	if _, err := tenantDB.ExecContext(
 		ctx,
 		"UPDATE player SET is_disqualified = ?, updated_at = ? WHERE id = ?",
@@ -890,6 +926,7 @@ func playerDisqualifiedHandler(c echo.Context) error {
 			true, now, playerID, err,
 		)
 	}
+
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		// 存在しないプレイヤー
