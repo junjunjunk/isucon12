@@ -594,11 +594,11 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
 
 	// スコアを登録した参加者のIDを取得する
 	scoredPlayerIDs := []string{}
@@ -1255,23 +1255,13 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	// competitonIDs := []string{}
-	// if err := tenantDB.SelectContext(
-	// 	ctx,
-	// 	&competitonIDs,
-	// 	"SELECT id FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
-	// 	v.tenantID,
-	// ); err != nil && !errors.Is(err, sql.ErrNoRows) {
-	// 	return fmt.Errorf("error Select competition: %w", err)
-	// }
-	// fmt.Printf("%+v\n", competitonIDs)
-
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
+	// player同士でロックがかかる状態になっている
+	// fl, err := flockByTenantID(tenantID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error flockByTenantID: %w", err)
+	// }
+	// defer fl.Close()
 
 	psds := []PlayerScoreDetail{}
 	// competitonIDから大会情報を取得
