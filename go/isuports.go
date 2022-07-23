@@ -79,6 +79,17 @@ func connectAdminDB() (*sqlx.DB, error) {
 	config.InterpolateParams = true
 	dsn := config.FormatDSN()
 	return sqlx.Open("mysql", dsn)
+	// return sqlx.Open("nrmysql", dsn)
+	for {
+		fmt.Println("connecting DB..")
+		dbx, err := sqlx.Connect("nrmysql", dsn)
+		if err != nil {
+			log.Printf("failed to connect to DB: %s.\n", err.Error())
+			time.Sleep(time.Second)
+			continue
+		}
+		return dbx, nil
+	}
 }
 
 // テナントDBのパスを返す
