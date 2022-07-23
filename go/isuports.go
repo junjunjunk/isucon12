@@ -28,7 +28,6 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	_ "github.com/mattn/go-sqlite3"
 
-
 	"github.com/patrickmn/go-cache"
 )
 
@@ -77,11 +76,11 @@ func connectAdminDB() (*sqlx.DB, error) {
 	config.ParseTime = true
 	config.InterpolateParams = true
 	dsn := config.FormatDSN()
-	return sqlx.Open("mysql", dsn)
+	// return sqlx.Open("mysql", dsn)
 	// return sqlx.Open("nrmysql", dsn)
 	for {
 		fmt.Println("connecting DB..")
-		dbx, err := sqlx.Connect("nrmysql", dsn)
+		dbx, err := sqlx.Connect("mysql", dsn)
 		if err != nil {
 			log.Printf("failed to connect to DB: %s.\n", err.Error())
 			time.Sleep(time.Second)
@@ -159,7 +158,7 @@ func Run() {
 		err       error
 	)
 	e := echo.New()
-	// e.Debug = true
+	e.Debug = false
 	e.Logger.SetLevel(log.OFF)
 
 	// sqliteのクエリログを出力する設定
@@ -172,7 +171,7 @@ func Run() {
 	}
 	defer sqlLogger.Close()
 
-	e.Use(middleware.Logger())
+	// e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(SetCacheControlPrivate)
 
