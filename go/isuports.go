@@ -82,13 +82,12 @@ func tenantDBPath(id int64) string {
 
 // テナントDBに接続する
 func connectToTenantDB(id int64) (*sqlx.DB, error) {
-	return connectAdminDB()
-	// p := tenantDBPath(id)
-	// db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=rw", p))
-	// if err != nil {
-	// 	return nil, fmt.Errorf("failed to open tenant DB: %w", err)
-	// }
-	// return db, nil
+	p := tenantDBPath(id)
+	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=rw", p))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open tenant DB: %w", err)
+	}
+	return db, nil
 }
 
 // テナントDBを新規に作成する
