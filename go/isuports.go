@@ -27,6 +27,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	_ "github.com/mattn/go-sqlite3"
 	nrecho "github.com/newrelic/go-agent/v3/integrations/nrecho-v4"
 	_ "github.com/newrelic/go-agent/v3/integrations/nrmysql"
 	_ "github.com/newrelic/go-agent/v3/integrations/nrsqlite3"
@@ -70,6 +71,7 @@ func connectAdminDB() (*sqlx.DB, error) {
 	config.Passwd = getEnv("ISUCON_DB_PASSWORD", "isucon")
 	config.DBName = getEnv("ISUCON_DB_NAME", "isuports")
 	config.ParseTime = true
+	config.InterpolateParams = true
 	dsn := config.FormatDSN()
 	return sqlx.Open("nrmysql", dsn)
 }
@@ -207,7 +209,9 @@ func Run() {
 		e.Logger.Fatalf("failed to connect db: %v", err)
 		return
 	}
-	adminDB.SetMaxOpenConns(10)
+	adminDB.SetMaxOpenConns(50)
+	adminDB.SetMaxIdleConns(50)                 // 開けておくコネクション数。デフォルトで2。増や。
+	adminDB.SetConnMaxLifetime(5 * time.Minute) // アイドル接続を使える時間
 	defer adminDB.Close()
 
 	port := getEnv("SERVER_APP_PORT", "3000")
