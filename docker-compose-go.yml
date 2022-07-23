@@ -7,7 +7,6 @@ services:
       ISUCON_DB_USER: isucon
       ISUCON_DB_PASSWORD: isucon
       ISUCON_DB_NAME: isuports
-      NEW_RELIC_LICENSE_KEY: eabdcd2b59a57d280ac659365a8dcf9eFFFFNRAL
     network_mode: host
     volumes:
       - /home/isucon/webapp/tenant_db:/home/isucon/webapp/tenant_db
