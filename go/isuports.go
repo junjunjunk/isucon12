@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1177,6 +1178,53 @@ func competitionScoreHandler(c echo.Context) error {
 		)
 	}
 
+	pss := []PlayerScoreRow{}
+	if err != nil {
+		log.Fatal(err)
+	}
+	ranks := make([]CompetitionRank, 0, len(pss))
+
+	// delete competition_rank
+	if _, err := adminDB.ExecContext(ctx, "DELETE FROM `rank` WHERE tenant_id = ? AND competition_id = ?", v.tenantID, competitionID); err != nil {
+		return fmt.Errorf("error Delete rank: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+	}
+
+	if err := tenantDB.SelectContext(
+		context.Background(),
+		&ranks,
+		`SELECT
+			ps.score,
+			ps.player_id,
+			p.display_name,
+			MAX(ps.row_num) AS max_row_num,
+			ps.tenant_id,
+			ps.competition_id
+		FROM
+			player_score ps,
+			player p
+		ON
+			ps.player_id = p.id
+		WHERE
+			ps.tenant_id = ? AND
+			ps.competition_id = ?
+		GROUP BY
+			ps.player_id,
+			ps.competition_id,
+			ps.tenant_id
+		HAVING
+			max_row_num = ps.row_num
+		ORDER BY 
+			ps.score DESC`,
+		v.tenantID,
+		competitionID,
+	); err != nil {
+		log.Fatal(err)
+	}
+	if len(ranks) > 0 {
+		if _, err := adminDB.NamedExec("INSERT INTO `rank` (tenant_id, competition_id, player_id, `score`, display_name, max_row_num) VALUES (:tenant_id, :competition_id, :player_id, :score, :display_name, :max_row_num)", ranks); err != nil {
+			log.Fatal(err)
+		}
+	}
 	now := time.Now().Unix()
 
 	cacheStore.Set(fmt.Sprintf("last_update_%d_%s", v.tenantID, competitionID), now, cache.NoExpiration)
@@ -1344,7 +1392,9 @@ type CompetitionRank struct {
 	Score             int64  `json:"score" db:"score"`
 	PlayerID          string `json:"player_id" db:"player_id"`
 	PlayerDisplayName string `json:"player_display_name" db:"display_name"`
-	RowNum            int64  `json:"-" db:"max_row_num"` // APIレスポンスのJSONには含まれない
+	RowNum            int64  `json:"-" db:"max_row_num"`    // APIレスポンスのJSONには含まれない
+	TenantID          int64  `json:"-" db:"tenant_id"`      // APIレスポンスのJSONには含まれない
+	CompetitionID     string `json:"-" db:"competition_id"` // APIレスポンスのJSONには含まれない
 	LastUpdate        int64
 }
 
@@ -1418,6 +1468,11 @@ func competitionRankingHandler(c echo.Context) error {
 		rankAfter = 0
 	}
 
+	offset := 0
+	if rankAfter > 0 {
+		offset = int(rankAfter)
+	}
+
 	// cacheを見に行く
 	// cacheを使える条件
 	//   まだスコアが更新されてない場合
@@ -1432,7 +1487,7 @@ func competitionRankingHandler(c echo.Context) error {
 	// スコア更新中かどうか？
 	updating, found := cacheStore.Get(fmt.Sprintf("update_lock_%d_%s", v.tenantID, competitionID))
 	if found && updating.(bool) {
-		pagedRanks, err = getRakingFromDB(ctx, v.tenantID, competitionID, rankAfter, tenantDB)
+		pagedRanks, err = getRakingFromDB(ctx, v.tenantID, competitionID, rankAfter, tenantDB, offset)
 		if err != nil {
 			return fmt.Errorf("error get from DB: %w", err)
 		}
@@ -1483,7 +1538,7 @@ func competitionRankingHandler(c echo.Context) error {
 
 		} else {
 			// なければDBから取得
-			pagedRanks, err = getRakingFromDB(ctx, v.tenantID, competitionID, rankAfter, tenantDB)
+			pagedRanks, err = getRakingFromDB(ctx, v.tenantID, competitionID, rankAfter, tenantDB, offset)
 			if err != nil {
 				return fmt.Errorf("error get from DB: %w", err)
 			}
@@ -1505,7 +1560,7 @@ func competitionRankingHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, res)
 }
 
-func getRakingFromDB(ctx context.Context, tenantID int64, competitionID string, rankAfter int64, tenantDB *sqlx.DB) ([]CompetitionRank, error) {
+func getRakingFromDB(ctx context.Context, tenantID int64, competitionID string, rankAfter int64, tenantDB *sqlx.DB, offset int) ([]CompetitionRank, error) {
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	fl, err := flockByTenantID(tenantID)
 	if err != nil {
@@ -1515,38 +1570,16 @@ func getRakingFromDB(ctx context.Context, tenantID int64, competitionID string, 
 	pss := []PlayerScoreRow{}
 	ranks := make([]CompetitionRank, 0, len(pss))
 
-	if err := tenantDB.SelectContext(
-		ctx,
-		&ranks,
-		`SELECT
-				ps.score,
-				ps.player_id,
-				p.display_name,
-				MAX(ps.row_num) AS max_row_num
-			FROM
-				player_score ps,
-				player p
-			ON
-				ps.player_id = p.id
-			WHERE
-				ps.tenant_id = ? AND
-				ps.competition_id = ?
-			GROUP BY
-				ps.player_id,
-				ps.competition_id,
-				ps.tenant_id
-			HAVING
-				max_row_num = ps.row_num
-			ORDER BY 
-				ps.score DESC
-			LIMIT 101
-			OFFSET ?`,
-		tenantID,
-		competitionID,
-		rankAfter,
-	); err != nil {
-		return []CompetitionRank{}, fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenantID, competitionID, err)
+	if err := adminDB.SelectContext(ctx, &ranks, "SELECT * FROM `rank` WHERE tenant_id = ? AND competition_id = ? ORDER BY score DESC LIMIT 101 OFFSET ?", tenantID, competitionID, offset); err != nil {
+		return []CompetitionRank{}, fmt.Errorf("error Select: %w", err)
 	}
+
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].Score == ranks[j].Score {
+			return ranks[i].RowNum < ranks[j].RowNum
+		}
+		return ranks[i].Score > ranks[j].Score
+	})
 
 	now := time.Now().Unix()
 
@@ -1756,5 +1789,65 @@ func initializeHandler(c echo.Context) error {
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
+	pss := []PlayerScoreRow{}
+	for i := 1; i <= 100; i++ {
+		tenantDB, err := connectToTenantDB(int64(i))
+		if err != nil {
+			log.Fatal(err)
+		}
+		cps := []string{}
+		if err := tenantDB.SelectContext(context.Background(), &cps, `SELECT id FROM competition`, i); err != nil {
+			log.Fatal(err)
+		}
+		ranks := make([]CompetitionRank, 0, len(pss))
+		for _, cp := range cps {
+			if err := tenantDB.SelectContext(
+				context.Background(),
+				&ranks,
+				`SELECT
+			ps.score,
+			ps.player_id,
+			p.display_name,
+			MAX(ps.row_num) AS max_row_num,
+			ps.tenant_id,
+			ps.competition_id
+		FROM
+			player_score ps,
+			player p
+		ON
+			ps.player_id = p.id
+		WHERE
+			ps.tenant_id = ? AND
+			ps.competition_id = ?
+		GROUP BY
+			ps.player_id,
+			ps.competition_id,
+			ps.tenant_id
+		HAVING
+			max_row_num = ps.row_num
+		ORDER BY 
+			ps.score DESC`,
+				i,
+				cp,
+			); err != nil {
+				log.Fatal(err)
+			}
+		}
+		if len(ranks) > 0 {
+			sort.Slice(ranks, func(i, j int) bool {
+				if ranks[i].Score == ranks[j].Score {
+					return ranks[i].RowNum < ranks[j].RowNum
+				}
+				return ranks[i].Score > ranks[j].Score
+			})
+
+			if _, err := adminDB.NamedExec("INSERT INTO `rank` (tenant_id, competition_id, player_id, `score`, display_name, max_row_num) VALUES (:tenant_id, :competition_id, :player_id, :score, :display_name, :max_row_num)", ranks); err != nil {
+				log.Fatal(err)
+			}
+		}
+		fmt.Println("end tenant", i)
+		tenantDB.Close()
+	}
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
 }
